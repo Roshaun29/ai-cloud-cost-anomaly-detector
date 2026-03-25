@@ -6,3 +6,4 @@ motor
 pymongo
 passlib[bcrypt]
 python-jose[cryptography]
+boto3

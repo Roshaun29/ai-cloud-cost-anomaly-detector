@@ -1,0 +1,100 @@
+from __future__ import annotations
+
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException, status
+
+from config import Settings, get_settings
+from routes.auth import get_current_user
+from routes.cloud import get_aws_service
+from services.anomaly_detector import (
+    AnomalyDetectionError,
+    CloudCostAnomalyDetector,
+    get_cloud_cost_anomaly_detector,
+)
+from services.aws_service import AwsCostExplorerError, AwsCredentialsError, AwsCostService
+from services.data_processor import (
+    CloudCostDataProcessor,
+    DataProcessingError,
+    get_cloud_cost_data_processor,
+)
+
+
+router = APIRouter(prefix="/anomaly", tags=["Anomaly Detection"])
+
+
+def get_anomaly_detector(
+    settings: Settings = Depends(get_settings),
+) -> CloudCostAnomalyDetector:
+    return get_cloud_cost_anomaly_detector(
+        contamination=settings.anomaly_contamination,
+        zscore_threshold=settings.anomaly_zscore_threshold,
+        min_samples_per_service=settings.anomaly_min_samples_per_service,
+    )
+
+
+def get_anomaly_data_processor() -> CloudCostDataProcessor:
+    return get_cloud_cost_data_processor(normalize_cost=False)
+
+
+def _serialize_anomalies(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    serialized: list[dict[str, Any]] = []
+    for record in records:
+        serialized.append(
+            {
+                "date": (
+                    record["date"].isoformat()
+                    if hasattr(record["date"], "isoformat")
+                    else record["date"]
+                ),
+                "service": str(record["service"]),
+                "cost": float(record["cost"]),
+                "anomaly_score": float(record["anomaly_score"]),
+                "is_anomaly": bool(record["is_anomaly"]),
+                "explanation": str(record["explanation"]),
+            }
+        )
+    return serialized
+
+
+@router.post("/detect")
+async def detect_cost_anomalies(
+    _current_user: dict = Depends(get_current_user),
+    aws_service: AwsCostService = Depends(get_aws_service),
+    data_processor: CloudCostDataProcessor = Depends(get_anomaly_data_processor),
+    anomaly_detector: CloudCostAnomalyDetector = Depends(get_anomaly_detector),
+) -> dict[str, Any]:
+    try:
+        raw_costs = aws_service.fetch_last_30_days_cost()
+        processed_df = data_processor.process(raw_costs)
+        anomaly_df = anomaly_detector.detect(processed_df)
+    except AwsCredentialsError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(exc),
+        ) from exc
+    except AwsCostExplorerError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
+    except (DataProcessingError, AnomalyDetectionError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unexpected error while detecting anomalies",
+        ) from exc
+
+    records = _serialize_anomalies(anomaly_df.to_dict(orient="records"))
+    anomalies = [record for record in records if record["is_anomaly"]]
+
+    return {
+        "message": "Anomaly detection completed successfully",
+        "count": len(records),
+        "anomaly_count": len(anomalies),
+        "data": anomalies,
+    }

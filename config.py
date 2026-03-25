@@ -16,6 +16,10 @@ class Settings(BaseModel):
     access_token_expire_minutes: int = Field(default=15)
     refresh_token_expire_days: int = Field(default=7)
     bcrypt_rounds: int = Field(default=12)
+    aws_region: str = Field(default="us-east-1")
+    anomaly_contamination: float = Field(default=0.1)
+    anomaly_zscore_threshold: float = Field(default=2.5)
+    anomaly_min_samples_per_service: int = Field(default=5)
 
 
 @lru_cache
@@ -35,6 +39,14 @@ def get_settings() -> Settings:
             ),
             refresh_token_expire_days=int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "7")),
             bcrypt_rounds=int(os.getenv("BCRYPT_ROUNDS", "12")),
+            aws_region=os.getenv("AWS_REGION", "us-east-1"),
+            anomaly_contamination=float(os.getenv("ANOMALY_CONTAMINATION", "0.1")),
+            anomaly_zscore_threshold=float(
+                os.getenv("ANOMALY_ZSCORE_THRESHOLD", "2.5")
+            ),
+            anomaly_min_samples_per_service=int(
+                os.getenv("ANOMALY_MIN_SAMPLES_PER_SERVICE", "5")
+            ),
         )
     except KeyError as exc:
         missing_key = exc.args[0]

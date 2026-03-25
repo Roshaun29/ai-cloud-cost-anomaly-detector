@@ -8,7 +8,6 @@ from typing import Any
 
 
 SUPPORTED_PROVIDERS = ("aws", "azure", "gcp")
-SUPPORTED_SERVICES = ("EC2", "S3", "Lambda", "RDS", "CloudFront")
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,51 +17,38 @@ class ServiceProfile:
     weekly_amplitude: float
     growth_rate: float
     spike_multiplier_range: tuple[float, float]
+    anomaly_probability_multiplier: float = 1.0
 
 
-BASE_SERVICE_PROFILES: dict[str, ServiceProfile] = {
-    "EC2": ServiceProfile(
-        baseline_cost=240.0,
-        daily_amplitude=0.08,
-        weekly_amplitude=0.12,
-        growth_rate=0.0045,
-        spike_multiplier_range=(1.8, 2.9),
-    ),
-    "S3": ServiceProfile(
-        baseline_cost=75.0,
-        daily_amplitude=0.03,
-        weekly_amplitude=0.06,
-        growth_rate=0.0030,
-        spike_multiplier_range=(1.5, 2.2),
-    ),
-    "Lambda": ServiceProfile(
-        baseline_cost=58.0,
-        daily_amplitude=0.15,
-        weekly_amplitude=0.10,
-        growth_rate=0.0055,
-        spike_multiplier_range=(2.0, 3.4),
-    ),
-    "RDS": ServiceProfile(
-        baseline_cost=145.0,
-        daily_amplitude=0.05,
-        weekly_amplitude=0.08,
-        growth_rate=0.0038,
-        spike_multiplier_range=(1.6, 2.4),
-    ),
-    "CloudFront": ServiceProfile(
-        baseline_cost=92.0,
-        daily_amplitude=0.10,
-        weekly_amplitude=0.14,
-        growth_rate=0.0042,
-        spike_multiplier_range=(1.7, 2.8),
-    ),
+PROVIDER_SERVICE_PROFILES: dict[str, dict[str, ServiceProfile]] = {
+    "aws": {
+        "EC2": ServiceProfile(260.0, 0.11, 0.15, 0.0048, (2.1, 3.2), 1.35),
+        "S3": ServiceProfile(82.0, 0.03, 0.06, 0.0028, (1.4, 2.0), 0.75),
+        "Lambda": ServiceProfile(64.0, 0.18, 0.12, 0.0056, (2.2, 3.8), 1.25),
+        "RDS": ServiceProfile(152.0, 0.05, 0.08, 0.0037, (1.5, 2.3), 0.8),
+        "CloudFront": ServiceProfile(97.0, 0.12, 0.16, 0.0041, (1.8, 2.9), 1.1),
+    },
+    "azure": {
+        "Virtual Machines": ServiceProfile(205.0, 0.05, 0.07, 0.0036, (1.35, 1.9), 0.65),
+        "Blob Storage": ServiceProfile(88.0, 0.02, 0.04, 0.0026, (1.25, 1.7), 0.45),
+        "App Services": ServiceProfile(110.0, 0.04, 0.06, 0.0032, (1.3, 1.8), 0.55),
+        "Azure SQL": ServiceProfile(148.0, 0.03, 0.05, 0.0031, (1.25, 1.75), 0.5),
+        "CDN": ServiceProfile(74.0, 0.06, 0.08, 0.0030, (1.35, 1.95), 0.6),
+    },
+    "gcp": {
+        "Compute Engine": ServiceProfile(225.0, 0.08, 0.11, 0.0044, (1.9, 3.0), 1.15),
+        "Cloud Storage": ServiceProfile(72.0, 0.02, 0.05, 0.0027, (1.3, 1.85), 0.55),
+        "Cloud Functions": ServiceProfile(52.0, 0.15, 0.11, 0.0052, (1.9, 3.2), 1.0),
+        "Cloud SQL": ServiceProfile(138.0, 0.04, 0.06, 0.0033, (1.35, 2.0), 0.7),
+        "BigQuery": ServiceProfile(124.0, 0.10, 0.14, 0.0047, (2.3, 4.1), 1.5),
+    },
 }
 
 
-PROVIDER_BASELINE_MULTIPLIER: dict[str, float] = {
-    "aws": 1.0,
-    "azure": 0.93,
-    "gcp": 0.89,
+PROVIDER_NOISE_MULTIPLIER: dict[str, float] = {
+    "aws": 1.15,
+    "azure": 0.75,
+    "gcp": 1.05,
 }
 
 
@@ -94,13 +80,12 @@ class SimulatorService:
 
         records: list[dict[str, Any]] = []
         for provider in selected_providers:
-            provider_multiplier = PROVIDER_BASELINE_MULTIPLIER[provider]
-            for service in SUPPORTED_SERVICES:
+            for service, profile in PROVIDER_SERVICE_PROFILES[provider].items():
                 records.extend(
                     self._generate_service_series(
                         provider=provider,
                         service=service,
-                        provider_multiplier=provider_multiplier,
+                        profile=profile,
                         start_date=simulation_start,
                     )
                 )
@@ -126,12 +111,7 @@ class SimulatorService:
     def _normalize_end_date(self, end_date: datetime | None) -> datetime:
         if end_date is None:
             today = datetime.now(timezone.utc)
-            return datetime(
-                year=today.year,
-                month=today.month,
-                day=today.day,
-                tzinfo=timezone.utc,
-            )
+            return datetime(today.year, today.month, today.day, tzinfo=timezone.utc)
 
         if end_date.tzinfo is None:
             return end_date.replace(tzinfo=timezone.utc)
@@ -141,31 +121,29 @@ class SimulatorService:
         self,
         provider: str,
         service: str,
-        provider_multiplier: float,
+        profile: ServiceProfile,
         start_date: datetime,
     ) -> list[dict[str, Any]]:
-        profile = BASE_SERVICE_PROFILES[service]
         records: list[dict[str, Any]] = []
-
-        service_baseline = profile.baseline_cost * provider_multiplier
         daily_offset = self._random.uniform(0, 2 * pi)
         weekly_offset = self._random.uniform(0, 2 * pi)
+        provider_noise = self.noise_level * PROVIDER_NOISE_MULTIPLIER[provider]
+        anomaly_probability = min(
+            self.anomaly_probability * profile.anomaly_probability_multiplier,
+            1.0,
+        )
 
         for day_index in range(self.days):
             current_date = start_date + timedelta(days=day_index)
-            daily_component = 1 + profile.daily_amplitude * sin(
-                (2 * pi * day_index) + daily_offset
-            )
-            weekly_component = 1 + profile.weekly_amplitude * sin(
-                (2 * pi * day_index / 7) + weekly_offset
-            )
+            daily_component = 1 + profile.daily_amplitude * sin((2 * pi * day_index) + daily_offset)
+            weekly_component = 1 + profile.weekly_amplitude * sin((2 * pi * day_index / 7) + weekly_offset)
             growth_component = 1 + (profile.growth_rate * day_index)
-            noise_component = 1 + self._random.uniform(-self.noise_level, self.noise_level)
+            noise_component = 1 + self._random.uniform(-provider_noise, provider_noise)
 
-            cost = service_baseline * daily_component * weekly_component * growth_component
+            cost = profile.baseline_cost * daily_component * weekly_component * growth_component
             cost *= max(noise_component, 0.05)
 
-            if self._random.random() < self.anomaly_probability:
+            if self._random.random() < anomaly_probability:
                 spike_multiplier = self._random.uniform(*profile.spike_multiplier_range)
                 cost *= spike_multiplier
 

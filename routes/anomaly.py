@@ -8,7 +8,7 @@ from config import Settings, get_settings
 from db.connection import get_anomaly_results_collection
 from models.anomaly import build_anomaly_result_document
 from routes.auth import get_current_user
-from routes.cloud import get_aws_service
+from routes.cloud import SIMULATED_PROVIDER_MAP, get_aws_service
 from services.anomaly_detector import (
     AnomalyDetectionError,
     CloudCostAnomalyDetector,
@@ -74,8 +74,10 @@ async def detect_cost_anomalies(
     provider: str = "aws",
 ) -> dict[str, Any]:
     try:
-        if provider.strip().lower() == "simulated":
-            raw_costs = simulator_service.generate(providers=["aws"])
+        provider_key = provider.strip().lower()
+        simulated_provider = SIMULATED_PROVIDER_MAP.get(provider_key)
+        if simulated_provider:
+            raw_costs = simulator_service.generate(providers=[simulated_provider])
         else:
             raw_costs = aws_service.fetch_last_30_days_cost()
         processed_df = data_processor.process(raw_costs)
@@ -115,6 +117,7 @@ async def detect_cost_anomalies(
                 anomaly_score=record["anomaly_score"],
                 is_anomaly=record["is_anomaly"],
                 explanation=record["explanation"],
+                provider=provider_key if provider_key in {"aws", "azure", "gcp"} else (simulated_provider or "aws"),
             )
             for index, record in enumerate(records)
             if record["is_anomaly"]

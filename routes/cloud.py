@@ -23,6 +23,14 @@ from services.simulator_service import SimulatorService
 router = APIRouter(prefix="/cloud", tags=["Cloud"])
 
 
+SIMULATED_PROVIDER_MAP = {
+    "simulated": "aws",
+    "aws_simulated": "aws",
+    "azure_simulated": "azure",
+    "gcp_simulated": "gcp",
+}
+
+
 def get_aws_service(settings: Settings = Depends(get_settings)) -> AwsCostService:
     return get_aws_cost_service(region_name=settings.aws_region)
 
@@ -61,8 +69,10 @@ async def sync_cloud_costs(
     provider: str = "aws",
 ) -> dict[str, Any]:
     try:
-        if provider.strip().lower() == "simulated":
-            raw_costs = simulator_service.generate(providers=["aws"])
+        provider_key = provider.strip().lower()
+        simulated_provider = SIMULATED_PROVIDER_MAP.get(provider_key)
+        if simulated_provider:
+            raw_costs = simulator_service.generate(providers=[simulated_provider])
         else:
             raw_costs = aws_service.fetch_last_30_days_cost()
         processed_df = data_processor.process(raw_costs)

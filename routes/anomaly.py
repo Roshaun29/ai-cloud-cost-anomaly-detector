@@ -71,6 +71,7 @@ def _serialize_anomalies(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "anomaly_score": float(record["anomaly_score"]),
                 "is_anomaly": bool(record["is_anomaly"]),
                 "explanation": str(record["explanation"]),
+                "provider": str(record.get("provider", "unknown")),
             }
         )
     return serialized
@@ -84,15 +85,28 @@ async def detect_cost_anomalies(
     anomaly_detector: CloudCostAnomalyDetector = Depends(get_anomaly_detector),
     simulator_service: SimulatorService = Depends(get_simulator_service),
     provider: str = "aws",
+    providers: str | None = None,
 ) -> dict[str, Any]:
-    provider_key = provider.strip().lower()
-    simulated_provider = SIMULATED_PROVIDER_MAP.get(provider_key)
-
     try:
-        if simulated_provider:
-            raw_costs = simulator_service.generate(providers=[simulated_provider])
+        # Support multi-provider detection
+        if providers:
+            provider_list = [p.strip().lower() for p in providers.split(",")]
+            provider_list = [p for p in provider_list if p in ("aws", "azure", "gcp")]
+            if not provider_list:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="At least one valid provider must be specified",
+                )
+            raw_costs = simulator_service.generate(providers=provider_list)
         else:
-            raw_costs = aws_service.fetch_last_30_days_cost()
+            provider_key = provider.strip().lower()
+            simulated_provider = SIMULATED_PROVIDER_MAP.get(provider_key)
+            
+            if simulated_provider:
+                raw_costs = simulator_service.generate(providers=[simulated_provider])
+            else:
+                raw_costs = aws_service.fetch_last_30_days_cost()
+
         processed_df = data_processor.process(raw_costs)
         anomaly_df = anomaly_detector.detect(processed_df)
     except AwsCredentialsError as exc:
@@ -122,24 +136,23 @@ async def detect_cost_anomalies(
 
     if anomaly_rows:
         anomaly_results_collection = get_anomaly_results_collection()
-        provider_name = (
-            provider_key if provider_key in {"aws", "azure", "gcp"} else (simulated_provider or "aws")
-        )
-        documents = [
-            build_anomaly_result_document(
-                user_id=str(current_user["_id"]),
-                date=row["date"].to_pydatetime()
-                if hasattr(row["date"], "to_pydatetime")
-                else row["date"],
-                service=str(row["service"]),
-                cost=float(row["cost"]),
-                anomaly_score=float(row["anomaly_score"]),
-                is_anomaly=bool(row["is_anomaly"]),
-                explanation=str(row["explanation"]),
-                provider=provider_name,
+        documents = []
+        for row in anomaly_rows:
+            provider_name = row.get("provider", "aws")
+            documents.append(
+                build_anomaly_result_document(
+                    user_id=str(current_user["_id"]),
+                    date=row["date"].to_pydatetime()
+                    if hasattr(row["date"], "to_pydatetime")
+                    else row["date"],
+                    service=str(row["service"]),
+                    cost=float(row["cost"]),
+                    anomaly_score=float(row["anomaly_score"]),
+                    is_anomaly=bool(row["is_anomaly"]),
+                    explanation=str(row["explanation"]),
+                    provider=provider_name,
+                )
             )
-            for row in anomaly_rows
-        ]
         await anomaly_results_collection.insert_many(documents)
 
     anomalies = _serialize_anomalies(anomaly_rows)

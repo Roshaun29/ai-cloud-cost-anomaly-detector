@@ -6,6 +6,9 @@ import { AnomaliesPage } from './pages/AnomaliesPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { LoginPage } from './pages/LoginPage';
 import { RegisterPage } from './pages/RegisterPage';
+import { ErrorBoundary } from './components/ErrorBoundary';
+import { ToastContainer } from './components/ToastContainer';
+import { ToastProvider } from './context/ToastContext';
 import { getStoredUser, hasStoredAuth, subscribeToAuthChanges } from './services/api';
 
 function ProtectedApp({ user }) {
@@ -33,17 +36,22 @@ export default function App() {
   }, []);
 
   return (
-    <Routes>
-      <Route path="/" element={user && hasStoredAuth() ? <Navigate to="/dashboard" replace /> : <LoginPage onAuth={setUser} />} />
-      <Route
-        path="/register"
-        element={user && hasStoredAuth() ? <Navigate to="/dashboard" replace /> : <RegisterPage onAuth={setUser} />}
-      />
-      <Route element={<ProtectedApp user={user} />}>
-        <Route path="/dashboard" element={<DashboardPage />} />
-        <Route path="/anomalies" element={<AnomaliesPage />} />
-      </Route>
-      <Route path="*" element={<Navigate to={user && hasStoredAuth() ? '/dashboard' : '/'} replace />} />
-    </Routes>
+    <ToastProvider>
+      <ErrorBoundary>
+        <Routes>
+          <Route path="/" element={user && hasStoredAuth() ? <Navigate to="/dashboard" replace /> : <LoginPage onAuth={setUser} />} />
+          <Route
+            path="/register"
+            element={user && hasStoredAuth() ? <Navigate to="/dashboard" replace /> : <RegisterPage onAuth={setUser} />}
+          />
+          <Route element={<ProtectedApp user={user} />}>
+            <Route path="/dashboard" element={<DashboardPage />} />
+            <Route path="/anomalies" element={<AnomaliesPage />} />
+          </Route>
+          <Route path="*" element={<Navigate to={user && hasStoredAuth() ? '/dashboard' : '/'} replace />} />
+        </Routes>
+        <ToastContainer />
+      </ErrorBoundary>
+    </ToastProvider>
   );
 }

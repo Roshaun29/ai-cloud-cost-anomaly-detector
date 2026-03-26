@@ -24,22 +24,13 @@ PROVIDER_SERVICE_PROFILES: dict[str, dict[str, ServiceProfile]] = {
     "aws": {
         "EC2": ServiceProfile(260.0, 0.11, 0.15, 0.0048, (2.1, 3.2), 1.35),
         "S3": ServiceProfile(82.0, 0.03, 0.06, 0.0028, (1.4, 2.0), 0.75),
-        "Lambda": ServiceProfile(64.0, 0.18, 0.12, 0.0056, (2.2, 3.8), 1.25),
-        "RDS": ServiceProfile(152.0, 0.05, 0.08, 0.0037, (1.5, 2.3), 0.8),
-        "CloudFront": ServiceProfile(97.0, 0.12, 0.16, 0.0041, (1.8, 2.9), 1.1),
     },
     "azure": {
         "Virtual Machines": ServiceProfile(205.0, 0.05, 0.07, 0.0036, (1.35, 1.9), 0.65),
         "Blob Storage": ServiceProfile(88.0, 0.02, 0.04, 0.0026, (1.25, 1.7), 0.45),
-        "App Services": ServiceProfile(110.0, 0.04, 0.06, 0.0032, (1.3, 1.8), 0.55),
-        "Azure SQL": ServiceProfile(148.0, 0.03, 0.05, 0.0031, (1.25, 1.75), 0.5),
-        "CDN": ServiceProfile(74.0, 0.06, 0.08, 0.0030, (1.35, 1.95), 0.6),
     },
     "gcp": {
         "Compute Engine": ServiceProfile(225.0, 0.08, 0.11, 0.0044, (1.9, 3.0), 1.15),
-        "Cloud Storage": ServiceProfile(72.0, 0.02, 0.05, 0.0027, (1.3, 1.85), 0.55),
-        "Cloud Functions": ServiceProfile(52.0, 0.15, 0.11, 0.0052, (1.9, 3.2), 1.0),
-        "Cloud SQL": ServiceProfile(138.0, 0.04, 0.06, 0.0033, (1.35, 2.0), 0.7),
         "BigQuery": ServiceProfile(124.0, 0.10, 0.14, 0.0047, (2.3, 4.1), 1.5),
     },
 }
@@ -78,8 +69,13 @@ class SimulatorService:
         providers: list[str] | tuple[str, ...] | None = None,
         end_date: datetime | None = None,
     ) -> list[dict[str, Any]]:
-        if self._random is None:
-            self._random = Random(self.seed)
+        # Create fresh random instance for each generation to ensure data variation
+        if self.seed is None:
+            import time
+            random_seed = int(time.time() * 1000000) % (2**31)
+            random_instance = Random(random_seed)
+        else:
+            random_instance = Random(self.seed)
 
         selected_providers = self._normalize_providers(providers)
         simulation_end = self._normalize_end_date(end_date)
@@ -94,6 +90,7 @@ class SimulatorService:
                         service=service,
                         profile=profile,
                         start_date=simulation_start,
+                        random_instance=random_instance,
                     )
                 )
 
@@ -130,9 +127,10 @@ class SimulatorService:
         service: str,
         profile: ServiceProfile,
         start_date: datetime,
+        random_instance: Any | None = None,
     ) -> list[dict[str, Any]]:
         records: list[dict[str, Any]] = []
-        random_source = self._random or Random(self.seed)
+        random_source = random_instance or self._random or Random(self.seed)
         daily_offset = random_source.uniform(0, 2 * pi)
         weekly_offset = random_source.uniform(0, 2 * pi)
         provider_noise = self.noise_level * PROVIDER_NOISE_MULTIPLIER[provider]

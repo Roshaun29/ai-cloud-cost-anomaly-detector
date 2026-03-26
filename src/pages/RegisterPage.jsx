@@ -4,9 +4,11 @@ import { useNavigate } from 'react-router-dom';
 import { InputField } from '../components/InputField';
 import { AuthLayout } from '../layout/AuthLayout';
 import { register } from '../services/api';
+import { useToast } from '../context/ToastContext';
 
 export function RegisterPage({ onAuth }) {
   const navigate = useNavigate();
+  const { success, error } = useToast();
   const [form, setForm] = useState({ name: 'Alex Morgan', email: 'alex@costcommand.ai', password: 'password123' });
   const [loading, setLoading] = useState(false);
 
@@ -17,10 +19,16 @@ export function RegisterPage({ onAuth }) {
   const handleSubmit = async (event) => {
     event.preventDefault();
     setLoading(true);
-    const response = await register(form);
-    onAuth(response.user);
-    setLoading(false);
-    navigate('/dashboard');
+    try {
+      const response = await register(form);
+      onAuth(response.user);
+      success('Workspace created successfully! Redirecting...');
+      navigate('/dashboard');
+    } catch (err) {
+      error(err.message || 'Failed to create workspace. Please try again.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (

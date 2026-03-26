@@ -1,12 +1,17 @@
 import { useEffect, useState, startTransition } from 'react';
 
 import { AnomaliesTable } from '../components/AnomaliesTable';
+import { AccountsList } from '../components/AccountsList';
 import { CostChart } from '../components/CostChart';
 import { GlassCard } from '../components/GlassCard';
 import { InputField } from '../components/InputField';
+import { ProviderBreakdown } from '../components/ProviderBreakdown';
+import { ProviderSelector } from '../components/ProviderSelector';
 import { StatCard } from '../components/StatCard';
 import { SyncButton } from '../components/SyncButton';
-import { addCloudAccount, fetchDashboardData, syncCloudData } from '../services/api';
+import { SyncStatus } from '../components/SyncStatus';
+import { addCloudAccount, fetchMultiCloudDashboard, syncMultiCloud, syncCloudData } from '../services/api';
+import { useToast } from '../context/ToastContext';
 
 const CONNECTION_STEPS = [
   'Validating credentials...',
@@ -19,33 +24,72 @@ const wait = (duration) => new Promise((resolve) => {
 });
 
 export function DashboardPage() {
-  const [dashboard, setDashboard] = useState({ metrics: [], chart: [], anomalies: [] });
+  const { success, error, info } = useToast();
+  const [dashboard, setDashboard] = useState({ metrics: [], chart: [], anomalies: [], providerSummary: {}, lastSyncedAt: null });
+  const [selectedProviders, setSelectedProviders] = useState(['aws', 'azure', 'gcp']);
   const [syncing, setSyncing] = useState(false);
-  const [syncLabel, setSyncLabel] = useState('Ready to sync live backend data');
+  const [loading, setLoading] = useState(true);
+  const [syncError, setSyncError] = useState(false);
   const [isAddAccountOpen, setIsAddAccountOpen] = useState(false);
   const [accountForm, setAccountForm] = useState({ provider: 'aws', account_name: '' });
   const [isSavingAccount, setIsSavingAccount] = useState(false);
   const [accountMessage, setAccountMessage] = useState('');
   const [connectionStep, setConnectionStep] = useState('');
   const [connectedAccounts, setConnectedAccounts] = useState([]);
+  const [syncingAccountId, setSyncingAccountId] = useState(null);
+  const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(true);
+  const [accountCosts, setAccountCosts] = useState({});
+  const [accountSyncTimes, setAccountSyncTimes] = useState({});
+  const [syncErrors, setSyncErrors] = useState({});
 
+  // Initial data load
   useEffect(() => {
-    fetchDashboardData()
-      .then((data) => {
-        startTransition(() => setDashboard(data));
-      })
-      .catch(() => {
-        setSyncLabel('Unable to load dashboard data');
-      });
-  }, []);
+    loadDashboardData();
+  }, [selectedProviders]);
+
+  // Auto-refresh effect (optional, every 60 seconds)
+  useEffect(() => {
+    if (!autoRefreshEnabled) return;
+
+    const refreshInterval = setInterval(() => {
+      loadDashboardData();
+    }, 60000); // 60 seconds
+
+    return () => clearInterval(refreshInterval);
+  }, [selectedProviders, autoRefreshEnabled]);
+
+  const loadDashboardData = async () => {
+    try {
+      setLoading(true);
+      setSyncError(false);
+      const providersStr = selectedProviders.join(',');
+      const data = await fetchMultiCloudDashboard(providersStr);
+      startTransition(() => setDashboard(data));
+    } catch (error) {
+      console.error('Failed to load dashboard:', error);
+      setSyncError(true);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleProviderChange = (providers) => {
+    setSelectedProviders(providers);
+  };
 
   const handleSync = async () => {
     setSyncing(true);
+    setSyncError(false);
     try {
-      const response = await syncCloudData();
-      setSyncLabel(`${response.lastSyncedAt} - ${response.syncedServices} services refreshed`);
-    } catch {
-      setSyncLabel('Sync failed');
+      const providersStr = selectedProviders.join(',');
+      await syncMultiCloud(providersStr);
+      // Refresh dashboard data immediately after sync
+      await loadDashboardData();
+      success('Cloud accounts synced successfully');
+    } catch (err) {
+      console.error('Sync failed:', err);
+      setSyncError(true);
+      error('Failed to sync cloud accounts. Please try again.');
     } finally {
       setSyncing(false);
     }
@@ -64,15 +108,51 @@ export function DashboardPage() {
 
       const account = await addCloudAccount(accountForm);
       setConnectedAccounts((current) => [account, ...current]);
-      setAccountMessage(`${account.account_name} connected to ${account.provider.toUpperCase()}`);
       setAccountForm({ provider: 'aws', account_name: '' });
       setIsAddAccountOpen(false);
       setConnectionStep('');
-    } catch {
-      setAccountMessage('Unable to add cloud account');
+      success(`${account.account_name} connected successfully`);
+    } catch (err) {
+      console.error('Failed to add account:', err);
+      error('Unable to add cloud account. Please check your credentials and try again.');
       setConnectionStep('');
     } finally {
       setIsSavingAccount(false);
+    }
+  };
+
+  const handleAccountSync = async (account) => {
+    setSyncingAccountId(account.id);
+    setSyncErrors((prev) => ({ ...prev, [account.id]: false }));
+    
+    try {
+      const result = await syncCloudData(account.provider, account.id);
+      
+      // Update account sync time
+      setAccountSyncTimes((prev) => ({
+        ...prev,
+        [account.id]: result.lastSyncedAt,
+      }));
+
+      // Mock cost data for account (in real implementation, would come from backend)
+      setAccountCosts((prev) => ({
+        ...prev,
+        [account.id]: {
+          total: Math.random() * 5000 + 500,
+          services: result.syncedServices || 8,
+          trend: (Math.random() - 0.5) * 20,
+        },
+      }));
+
+      // Refresh overall dashboard after account sync
+      await loadDashboardData();
+      success(`${account.account_name} synced successfully`);
+    } catch (err) {
+      console.error(`Failed to sync account ${account.id}:`, err);
+      setSyncErrors((prev) => ({ ...prev, [account.id]: true }));
+      error(`Failed to sync ${account.account_name}`);
+    } finally {
+      setSyncingAccountId(null);
     }
   };
 
@@ -92,11 +172,29 @@ export function DashboardPage() {
               + Add Account
             </button>
             <SyncButton onSync={handleSync} loading={syncing} />
+            <label className="auto-refresh-toggle" title="Auto-refresh every 60 seconds">
+              <input
+                type="checkbox"
+                checked={autoRefreshEnabled}
+                onChange={(e) => setAutoRefreshEnabled(e.target.checked)}
+                disabled={syncing}
+              />
+              <span>Auto-refresh</span>
+            </label>
           </div>
-          <span className="sync-label">{syncLabel}</span>
-          {accountMessage ? <span className="sync-label">{accountMessage}</span> : null}
+          <SyncStatus 
+            lastSyncedAt={dashboard.lastSyncedAt} 
+            syncing={syncing} 
+            error={syncError}
+          />
         </div>
       </section>
+
+      <ProviderSelector 
+        selectedProviders={selectedProviders}
+        onChange={handleProviderChange}
+        disabled={syncing}
+      />
 
       <section className="stats-grid">
         {dashboard.metrics.map((metric) => (
@@ -105,7 +203,7 @@ export function DashboardPage() {
       </section>
 
       <section className="dashboard-main-grid">
-        <CostChart data={dashboard.chart} />
+        <CostChart data={dashboard.chart} loading={loading} />
         <GlassCard title="FinOps posture" subtitle="This week at a glance">
           <div className="insight-list">
             <div className="insight-row">
@@ -127,23 +225,28 @@ export function DashboardPage() {
         </GlassCard>
       </section>
 
-      <GlassCard title="Connected accounts" subtitle="Cloud connection status">
-        {connectedAccounts.length ? (
-          <div className="connected-accounts-list">
-            {connectedAccounts.map((account) => (
-              <div className="connected-account-row" key={account.id}>
-                <div>
-                  <strong>{account.account_name}</strong>
-                  <span>{account.provider.toUpperCase()}</span>
-                </div>
-                <span className="severity-pill severity-connected">{account.status}</span>
-              </div>
-            ))}
+      <ProviderBreakdown 
+        summary={dashboard.providerSummary}
+        costRows={Object.values(dashboard.costRowsByProvider || {}).flat() || []}
+      />
+
+      <section className="accounts-section">
+        <div className="section-header">
+          <div>
+            <h2>Connected Accounts</h2>
+            <p>Manage your cloud accounts and monitor their costs</p>
           </div>
-        ) : (
-          <p className="empty-state-copy">No cloud accounts connected yet.</p>
-        )}
-      </GlassCard>
+        </div>
+        <AccountsList 
+          accounts={connectedAccounts}
+          accountCosts={accountCosts}
+          accountSyncTimes={accountSyncTimes}
+          syncingAccountId={syncingAccountId}
+          syncErrors={syncErrors}
+          onSync={handleAccountSync}
+          onAddAccount={() => setIsAddAccountOpen(true)}
+        />
+      </section>
 
       <AnomaliesTable rows={dashboard.anomalies} compact />
 

@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const API_BASE_URL = '';
+const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 const ACCESS_TOKEN_KEY = 'auth_access_token';
 const REFRESH_TOKEN_KEY = 'auth_refresh_token';
 const USER_KEY = 'auth_user';
@@ -75,6 +75,29 @@ function formatCurrency(value) {
     currency: 'USD',
     maximumFractionDigits: 0,
   }).format(value);
+}
+
+function formatSyncTime(date) {
+  const now = new Date();
+  const diffMs = now - date;
+  const diffSecs = Math.floor(diffMs / 1000);
+  const diffMins = Math.floor(diffSecs / 60);
+  const diffHours = Math.floor(diffMins / 60);
+
+  if (diffSecs < 60) {
+    return 'Just now';
+  }
+  if (diffMins < 60) {
+    return `${diffMins} min${diffMins > 1 ? 's' : ''} ago`;
+  }
+  if (diffHours < 24) {
+    return `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`;
+  }
+  return date.toLocaleTimeString('en-US', {
+    hour: 'numeric',
+    minute: '2-digit',
+    second: '2-digit',
+  });
 }
 
 function buildChartData(costRows) {
@@ -208,20 +231,82 @@ export async function fetchDashboardData(provider = 'aws_simulated') {
   };
 }
 
-export async function syncCloudData(provider = 'aws_simulated') {
-  const response = await apiClient.get('/cloud/sync', { params: { provider } });
+export async function fetchMultiCloudDashboard(providers = 'aws,azure,gcp') {
+  const [cloudResponse, anomalyResponse] = await Promise.all([
+    apiClient.get('/cloud/sync-multi', { params: { providers } }),
+    apiClient.post('/anomaly/detect', null, { params: { providers } }).catch(() => ({
+      data: { data: [] },
+    })),
+  ]);
+
+  const costRows = cloudResponse.data.data ?? [];
+  const anomalyRows = anomalyResponse.data.data ?? [];
+  const syncedAt = cloudResponse.data.synced_at ? new Date(cloudResponse.data.synced_at) : new Date();
+
+  // Group cost data by provider and service for detailed breakdown
+  const costRowsByProvider = costRows.reduce((acc, row) => {
+    const provider = row.provider || 'unknown';
+    if (!acc[provider]) {
+      acc[provider] = [];
+    }
+    acc[provider].push(row);
+    return acc;
+  }, {});
+
+  return {
+    metrics: buildMetrics(costRows, anomalyRows),
+    chart: buildChartData(costRows),
+    anomalies: mapAnomalyRows(anomalyRows),
+    providers: cloudResponse.data.providers ?? [],
+    providerSummary: cloudResponse.data.provider_summary ?? {},
+    costRowsByProvider,
+    syncedAt,
+    lastSyncedAt: formatSyncTime(syncedAt),
+  };
+}
+
+export async function syncCloudData(provider = 'aws_simulated', accountId = null) {
+  const params = accountId ? { account_id: accountId } : { provider };
+  const response = await apiClient.get('/cloud/sync', { params });
   const costRows = response.data.data ?? [];
   const uniqueServices = new Set(costRows.map((row) => row.service));
 
   return {
     lastSyncedAt: 'Moments ago',
     syncedServices: uniqueServices.size,
+    account: response.data.account ?? null,
+  };
+}
+
+export async function syncMultiCloud(providers = 'aws,azure,gcp') {
+  const response = await apiClient.get('/cloud/sync-multi', { params: { providers } });
+  const costRows = response.data.data ?? [];
+  const uniqueServices = new Set(costRows.map((row) => row.service));
+  const syncedAt = response.data.synced_at ? new Date(response.data.synced_at) : new Date();
+
+  return {
+    syncedAt,
+    lastSyncedAt: formatSyncTime(syncedAt),
+    syncedServices: uniqueServices.size,
+    providersCount: response.data.providers ? response.data.providers.length : 0,
+    providerSummary: response.data.provider_summary ?? {},
   };
 }
 
 export async function fetchAnomalies(provider = 'aws_simulated') {
   const response = await apiClient.post('/anomaly/detect', null, { params: { provider } });
   return mapAnomalyRows(response.data.data ?? []);
+}
+
+export async function fetchCostHistory(filters = {}) {
+  const params = {
+    ...(filters.startDate && { start_date: filters.startDate }),
+    ...(filters.endDate && { end_date: filters.endDate }),
+    ...(filters.service && { service: filters.service }),
+    ...(filters.provider && { provider: filters.provider }),
+  };
+  const response = await apiClient.get('/cost/history', { params });
+  return response.data.data ?? [];
 }
 
 export { apiClient };

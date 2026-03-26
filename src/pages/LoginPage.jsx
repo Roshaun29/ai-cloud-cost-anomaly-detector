@@ -4,9 +4,11 @@ import { Link, useNavigate } from 'react-router-dom';
 import { InputField } from '../components/InputField';
 import { AuthLayout } from '../layout/AuthLayout';
 import { login } from '../services/api';
+import { useToast } from '../context/ToastContext';
 
 export function LoginPage({ onAuth }) {
   const navigate = useNavigate();
+  const { success, error } = useToast();
   const [form, setForm] = useState({ email: 'alex@costcommand.ai', password: 'password123' });
   const [loading, setLoading] = useState(false);
 
@@ -17,10 +19,16 @@ export function LoginPage({ onAuth }) {
   const handleSubmit = async (event) => {
     event.preventDefault();
     setLoading(true);
-    const response = await login(form);
-    onAuth(response.user);
-    setLoading(false);
-    navigate('/dashboard');
+    try {
+      const response = await login(form);
+      onAuth(response.user);
+      success('Welcome back! Redirecting to dashboard...');
+      navigate('/dashboard');
+    } catch (err) {
+      error(err.message || 'Failed to sign in. Please check your credentials.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
